@@ -30,6 +30,7 @@
 function _job_queue:init"${1:-}"() { # this quotation mark to fix syntax highlighting "
   zmodload zsh/datetime
   zmodload zsh/system
+  zmodload zsh/zselect
   # -F loads only the zf_-prefixed builtins, so the plain mkdir/rm names
   # are left alone for the rest of the user's session
   zmodload -F zsh/files b:zf_mkdir b:zf_rm
@@ -104,7 +105,7 @@ function job-queue"${1:-}"() { # this quotation mark to fix syntax highlighting 
       scope=$1
       job_id=$2
 
-      zf_rm $_job_queue_tmpdir${scope}/$job_id &>/dev/null
+      zf_rm -f $_job_queue_tmpdir${scope}/$job_id &>/dev/null
     }
 
     # _job_queue:push
@@ -148,10 +149,14 @@ function job-queue"${1:-}"() { # this quotation mark to fix syntax highlighting 
         }
 
         # gets unfunction'd
+        # sets REPLY
         function _job_queue:push:get_front_of_queue_job_id() {
           # cannot support debug message
-          # sort by modification time descending, first result, basename; empty if none
-          'builtin' 'print' -r -- $_job_queue_tmpdir${scope}/*(Om[1]N:t)
+          # oldest first; empty if none
+          # NB must be an array assignment: scalar assignments do not glob
+          local -a front
+          front=( $_job_queue_tmpdir${scope}/*(Om[1]N:t) )
+          REPLY=$front[1]
         }
 
         # gets unfunction'd
@@ -188,23 +193,33 @@ function job-queue"${1:-}"() { # this quotation mark to fix syntax highlighting 
 
           'builtin' 'echo'
 
-          zf_rm $front_of_queue_job_path &>/dev/null
+          zf_rm -f $front_of_queue_job_path &>/dev/null
         }
 
         # gets unfunction'd
         function _job_queue:push:wait_turn() {
-          front_of_queue_job_id=$(_job_queue:push:get_front_of_queue_job_id)
+          # local so the caller's REPLY keeps holding the job id
+          local REPLY
+
+          _job_queue:push:get_front_of_queue_job_id
+          front_of_queue_job_id=$REPLY
 
           while [[ $front_of_queue_job_id != $job_id ]]; do
-            front_of_queue_job_id=$(_job_queue:push:get_front_of_queue_job_id)
+            # our job file is gone, e.g. `job-queue clear $scope` ran while we waited
+            [[ $front_of_queue_job_id ]] || break
 
             front_of_queue_job_age=$(( $EPOCHREALTIME - ${front_of_queue_job_id%%-*} ))
 
-            if ((  $front_of_queue_job_age > $JOB_QUEUE_TIMEOUT_AGE_SECONDS )); then
+            if (( $front_of_queue_job_age > $JOB_QUEUE_TIMEOUT_AGE_SECONDS )); then
               _job_queue:push:handle_timeout
             fi
 
-            'command' 'sleep' 0.01
+            # fork-free sleep, in hundredths of a second
+            zselect -t 1
+
+            # keep last: zselect returns 1 on timeout, and the loop takes its status
+            _job_queue:push:get_front_of_queue_job_id
+            front_of_queue_job_id=$REPLY
           done
         }
 
@@ -226,16 +241,13 @@ function job-queue"${1:-}"() { # this quotation mark to fix syntax highlighting 
 
       local uuid
 
-      if (( $+commands[uuidgen] )); then
-        uuid=$('command' 'uuidgen')
-      else
-        'builtin' 'printf' -v uuid '%04x%04x-%04x-4%03x-%x%03x-%04x%04x%04x' \
-          $RANDOM $RANDOM \
-          $RANDOM \
-          $(( RANDOM % 4096 )) \
-          $(( 8 + RANDOM % 4 )) $(( RANDOM % 4096 )) \
-          $RANDOM $RANDOM $RANDOM
-      fi
+      # the EPOCHREALTIME prefix and the reseeded RANDOM make this unique enough for a queue id, so no uuidgen fork
+      'builtin' 'printf' -v uuid '%04x%04x-%04x-4%03x-%x%03x-%04x%04x%04x' \
+        $RANDOM $RANDOM \
+        $RANDOM \
+        $(( RANDOM % 4096 )) \
+        $(( 8 + RANDOM % 4 )) $(( RANDOM % 4096 )) \
+        $RANDOM $RANDOM $RANDOM
 
       REPLY="$EPOCHREALTIME--$uuid"
     }
