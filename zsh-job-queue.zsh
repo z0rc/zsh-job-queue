@@ -208,9 +208,9 @@ function job-queue"${1:-}"() { # this quotation mark to fix syntax highlighting 
             # our job file is gone, e.g. `job-queue clear $scope` ran while we waited
             [[ $front_of_queue_job_id ]] || break
 
-            front_of_queue_job_age=$(( $EPOCHREALTIME - ${front_of_queue_job_id%%-*} ))
+            front_of_queue_job_age=$(( EPOCHREALTIME - ${front_of_queue_job_id%%-*} ))
 
-            if (( $front_of_queue_job_age > $JOB_QUEUE_TIMEOUT_AGE_SECONDS )); then
+            if (( front_of_queue_job_age > JOB_QUEUE_TIMEOUT_AGE_SECONDS )); then
               _job_queue:push:handle_timeout
             fi
 
